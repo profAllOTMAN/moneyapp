@@ -54,20 +54,6 @@ const TYPE_TO_KEY = {
   investments: 'investments',
   savings: 'savingsGoals',
 };
-const TRANSACTION_TAG_COLORS = {
-  Income: 'green',
-  Expense: 'red',
-  Investment: 'purple',
-};
-const TRANSFER_FROM_OPTIONS = [
-  { value: 'balance', label: 'Balance' },
-  { value: 'savings', label: 'Savings Goal' },
-];
-const TRANSFER_TO_OPTIONS = [
-  { value: 'balance', label: 'Balance' },
-  { value: 'savings', label: 'Savings Goal' },
-  { value: 'investments', label: 'Investments' },
-];
 
 function fmtCurrency(value) {
   return `${Number(value || 0).toLocaleString()} MAD`;
@@ -116,8 +102,6 @@ export default function App() {
   const [current, setCurrent] = useState('dashboard');
   const [data, setData] = useState(defaultData);
   const [modal, setModal] = useState({ open: false, type: null, record: null });
-  const [transferModalOpen, setTransferModalOpen] = useState(false);
-  const [transferDefaults, setTransferDefaults] = useState({ from: 'balance', to: 'savings', savingsGoalId: null });
   const [autoSweepMonth, setAutoSweepMonth] = useState('');
 
   const user = session?.user ?? null;
@@ -372,115 +356,6 @@ export default function App() {
   ];
 
   const openModal = (type, record = null) => setModal({ open: true, type, record });
-  const openTransferModal = (defaults = {}) => {
-    setTransferDefaults({
-      from: defaults.from || 'balance',
-      to: defaults.to || 'savings',
-      savingsGoalId: defaults.savingsGoalId || null,
-    });
-    setTransferModalOpen(true);
-  };
-
-  const runTransfer = useCallback(async (values) => {
-    const amount = Number(values.amount || 0);
-    if (amount <= 0) {
-      setError('Transfer amount must be greater than 0.');
-      return false;
-    }
-
-    const from = values.from;
-    const to = values.to;
-    const now = dayjs().format('YYYY-MM-DD');
-    const selectedGoal = data.savingsGoals.find((goal) => goal.id === values.savingsGoalId);
-
-    if (from === to) {
-      setError('Choose different source and destination.');
-      return false;
-    }
-
-    if (from === 'balance' && totals.totalBalance < amount) {
-      setError('Insufficient balance for this transfer.');
-      return false;
-    }
-
-    if (from === 'savings') {
-      if (!selectedGoal) {
-        setError('Please select a savings goal.');
-        return false;
-      }
-      if (Number(selectedGoal.currentAmount) < amount) {
-        setError('Insufficient funds in selected savings goal.');
-        return false;
-      }
-    }
-
-    if (to === 'savings' && !selectedGoal) {
-      setError('Please select a savings goal.');
-      return false;
-    }
-
-    if (from === 'balance' && to === 'savings') {
-      const out = await saveRecord('expenses', {
-        id: crypto.randomUUID(),
-        amount,
-        category: 'Business expenses',
-        date: now,
-        paymentMethod: 'Internal',
-        notes: `Transfer to savings: ${selectedGoal?.name || 'Goal'}`,
-      });
-      if (!out) return false;
-      return saveRecord('savingsGoals', {
-        ...selectedGoal,
-        currentAmount: Number(selectedGoal.currentAmount) + amount,
-      });
-    }
-
-    if (from === 'savings' && to === 'balance') {
-      const out = await saveRecord('savingsGoals', {
-        ...selectedGoal,
-        currentAmount: Number(selectedGoal.currentAmount) - amount,
-      });
-      if (!out) return false;
-      return saveRecord('incomes', {
-        id: crypto.randomUUID(),
-        amount,
-        source: 'Investment Returns',
-        date: now,
-        description: `Transfer from savings: ${selectedGoal.name}`,
-        tag: 'Internal transfer',
-      });
-    }
-
-    if (from === 'balance' && to === 'investments') {
-      return saveRecord('investments', {
-        id: crypto.randomUUID(),
-        amount,
-        businessName: values.businessName || 'Internal Allocation',
-        investmentType: values.investmentType || 'Operations',
-        date: now,
-        notes: 'Transfer from balance',
-      });
-    }
-
-    if (from === 'savings' && to === 'investments') {
-      const out = await saveRecord('savingsGoals', {
-        ...selectedGoal,
-        currentAmount: Number(selectedGoal.currentAmount) - amount,
-      });
-      if (!out) return false;
-      return saveRecord('investments', {
-        id: crypto.randomUUID(),
-        amount,
-        businessName: values.businessName || 'Internal Allocation',
-        investmentType: values.investmentType || 'Operations',
-        date: now,
-        notes: `Transfer from savings: ${selectedGoal.name}`,
-      });
-    }
-
-    setError('Transfer direction is not supported.');
-    return false;
-  }, [data.savingsGoals, saveRecord, totals.totalBalance]);
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -502,13 +377,9 @@ export default function App() {
 
           {current === 'dashboard' && (
             <Space direction="vertical" size="large" style={{ width: '100%' }}>
-              <Card>
-                <Space wrap>
-                  <Button onClick={() => openTransferModal({ from: 'balance', to: 'savings' })}>Transfer Funds</Button>
-                </Space>
-              </Card>
               <Row gutter={[16, 16]}>
                 {[
+                  ['Total Balance', totals.totalBalance, '#111827'],
                   ['Total Income', totals.totalIncome, '#16a34a'],
                   ['Total Expenses', totals.totalExpenses, '#dc2626'],
                   ['Total Investments', totals.totalInvestments, '#7c3aed'],
@@ -518,11 +389,6 @@ export default function App() {
                     <Card><Statistic title={title} value={value} suffix="MAD" valueStyle={{ color }} /></Card>
                   </Col>
                 ))}
-                <Col xs={24} sm={12} lg={8} xl={4}>
-                  <Card hoverable onClick={() => openTransferModal({ from: 'balance', to: 'savings' })}>
-                    <Statistic title="Total Balance (click to transfer)" value={totals.totalBalance} suffix="MAD" valueStyle={{ color: '#111827' }} />
-                  </Card>
-                </Col>
               </Row>
 
               <Row gutter={[16, 16]}>
@@ -582,12 +448,11 @@ export default function App() {
                   currentAmount: Number(goal.currentAmount) + Number(amount),
                 });
               }}
-              onTransferFromSavings={(goalId) => openTransferModal({ from: 'savings', to: 'balance', savingsGoalId: goalId })}
             />
           )}
 
           {current === 'reports' && (
-            <Reports data={data} monthlySummary={monthlySummary} incomeBySource={incomeBySource} expenseByCategory={expenseByCategory} totals={totals} />
+            <Reports data={data} monthlySummary={monthlySummary} incomeBySource={incomeBySource} expenseByCategory={expenseByCategory} />
           )}
 
           {current === 'settings' && (
@@ -616,23 +481,12 @@ export default function App() {
           setModal({ open: false, type: null, record: null });
         }}
       />
-      <TransferModal
-        open={transferModalOpen}
-        defaults={transferDefaults}
-        totals={totals}
-        savingsGoals={data.savingsGoals}
-        onCancel={() => setTransferModalOpen(false)}
-        onSubmit={async (values) => {
-          const ok = await runTransfer(values);
-          if (ok) setTransferModalOpen(false);
-        }}
-      />
     </Layout>
   );
 }
 
 const transactionColumns = [
-  { title: 'Type', dataIndex: 'kind', key: 'kind', render: (value) => <Tag color={TRANSACTION_TAG_COLORS[value] || 'default'}>{value}</Tag> },
+  { title: 'Type', dataIndex: 'kind', key: 'kind', render: (value) => <Tag>{value}</Tag> },
   { title: 'Amount', dataIndex: 'amount', key: 'amount', render: fmtCurrency },
   { title: 'Date', dataIndex: 'date', key: 'date' },
   {
@@ -642,7 +496,7 @@ const transactionColumns = [
   },
 ];
 
-function ModuleTable({ current, data, onOpen, onDelete, onAddFunds, onTransferFromSavings }) {
+function ModuleTable({ current, data, onOpen, onDelete, onAddFunds }) {
   const config = {
     income: { key: 'incomes', title: 'Income Sources', color: 'green' },
     expenses: { key: 'expenses', title: 'Expenses', color: 'red' },
@@ -698,10 +552,7 @@ function ModuleTable({ current, data, onOpen, onDelete, onAddFunds, onTransferFr
         <Space>
           <Button size="small" onClick={() => onOpen(current, record)}>Edit</Button>
           {current === 'savings' ? (
-            <>
-              <Button size="small" type="primary" onClick={() => onAddFunds(record.id, 100)}>+100 MAD</Button>
-              <Button size="small" onClick={() => onTransferFromSavings(record.id)}>Transfer</Button>
-            </>
+            <Button size="small" type="primary" onClick={() => onAddFunds(record.id, 100)}>+100 MAD</Button>
           ) : null}
           <Button danger size="small" onClick={() => onDelete(config.key, record.id)}>Delete</Button>
         </Space>
@@ -718,10 +569,8 @@ function ModuleTable({ current, data, onOpen, onDelete, onAddFunds, onTransferFr
   );
 }
 
-function Reports({ data, monthlySummary, incomeBySource, expenseByCategory, totals }) {
+function Reports({ data, monthlySummary, incomeBySource, expenseByCategory }) {
   const [filters, setFilters] = useState({ month: null, year: null, source: null, category: null });
-  const [compare, setCompare] = useState({ metric: 'income', leftMonth: null, rightMonth: null });
-  const [sim, setSim] = useState({ months: 12, monthlyIncome: 0, monthlyExpenses: 0, monthlyInvestments: 0, monthlySavingsMove: 0 });
 
   const filtered = useMemo(() => {
     const testDate = (date) => {
@@ -736,101 +585,23 @@ function Reports({ data, monthlySummary, incomeBySource, expenseByCategory, tota
     };
   }, [data, filters]);
 
-  const compareResult = useMemo(() => {
-    const byMonth = new Map(monthlySummary.map((row) => [row.month, row]));
-    const left = byMonth.get(compare.leftMonth) || { income: 0, expenses: 0, investments: 0 };
-    const right = byMonth.get(compare.rightMonth) || { income: 0, expenses: 0, investments: 0 };
-    const leftValue = Number(left[compare.metric] || 0);
-    const rightValue = Number(right[compare.metric] || 0);
-    const diff = leftValue - rightValue;
-    return {
-      leftValue,
-      rightValue,
-      diff,
-      chartData: [
-        { month: compare.leftMonth || 'Left', value: leftValue },
-        { month: compare.rightMonth || 'Right', value: rightValue },
-      ],
-    };
-  }, [compare, monthlySummary]);
-
-  const simResult = useMemo(() => {
-    const rows = [];
-    let balance = Number(totals.totalBalance || 0);
-    let savings = Number(totals.totalSavings || 0);
-    for (let i = 1; i <= Number(sim.months || 0); i += 1) {
-      balance += Number(sim.monthlyIncome || 0) - Number(sim.monthlyExpenses || 0) - Number(sim.monthlyInvestments || 0) - Number(sim.monthlySavingsMove || 0);
-      savings += Number(sim.monthlySavingsMove || 0);
-      rows.push({ month: dayjs().add(i, 'month').format('YYYY-MM'), balance, savings });
-    }
-    return { rows, finalBalance: balance, finalSavings: savings };
-  }, [sim, totals.totalBalance, totals.totalSavings]);
-
-  const monthOptions = monthlySummary.map((row) => ({ value: row.month, label: row.month }));
-
   return (
-    <Space direction="vertical" style={{ width: '100%' }} size="large">
-      <Card title="Month Comparison">
-        <Space wrap style={{ marginBottom: 16 }}>
-          <Select
-            style={{ width: 180 }}
-            value={compare.metric}
-            onChange={(metric) => setCompare((prev) => ({ ...prev, metric }))}
-            options={[
-              { value: 'income', label: 'Income' },
-              { value: 'expenses', label: 'Expenses' },
-              { value: 'investments', label: 'Investments' },
-            ]}
-          />
-          <Select style={{ width: 180 }} placeholder="Left month" value={compare.leftMonth} onChange={(leftMonth) => setCompare((prev) => ({ ...prev, leftMonth }))} options={monthOptions} />
-          <Select style={{ width: 180 }} placeholder="Right month" value={compare.rightMonth} onChange={(rightMonth) => setCompare((prev) => ({ ...prev, rightMonth }))} options={monthOptions} />
-        </Space>
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={8}><Card><Statistic title={compare.leftMonth || 'Left'} value={compareResult.leftValue} suffix="MAD" /></Card></Col>
-          <Col xs={24} md={8}><Card><Statistic title={compare.rightMonth || 'Right'} value={compareResult.rightValue} suffix="MAD" /></Card></Col>
-          <Col xs={24} md={8}><Card><Statistic title="Difference" value={compareResult.diff} suffix="MAD" /></Card></Col>
-          <Col xs={24}>
-            {(compare.leftMonth && compare.rightMonth) ? (
-              <Column data={compareResult.chartData} xField="month" yField="value" />
-            ) : (
-              <Alert type="info" showIcon message="Select two months to compare." />
-            )}
-          </Col>
-        </Row>
-      </Card>
+    <Card title="Reports & Analytics">
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Select allowClear placeholder="Month" style={{ width: 120 }} onChange={(month) => setFilters((f) => ({ ...f, month }))} options={Array.from({ length: 12 }, (_, i) => ({ label: i + 1, value: i }))} />
+        <Select allowClear placeholder="Year" style={{ width: 120 }} onChange={(year) => setFilters((f) => ({ ...f, year }))} options={[2024, 2025, 2026].map((y) => ({ value: y }))} />
+        <Select allowClear placeholder="Source" style={{ width: 200 }} onChange={(source) => setFilters((f) => ({ ...f, source }))} options={incomeSources.map((source) => ({ value: source }))} />
+        <Select allowClear placeholder="Category" style={{ width: 220 }} onChange={(category) => setFilters((f) => ({ ...f, category }))} options={expenseCategories.map((category) => ({ value: category }))} />
+      </Space>
 
-      <Card title="Simulation">
-        <Space wrap style={{ marginBottom: 16 }}>
-          <InputNumber min={1} max={36} addonBefore="Months" value={sim.months} onChange={(months) => setSim((prev) => ({ ...prev, months: Number(months || 1) }))} />
-          <InputNumber addonBefore="Income/mo" value={sim.monthlyIncome} onChange={(v) => setSim((prev) => ({ ...prev, monthlyIncome: Number(v || 0) }))} />
-          <InputNumber addonBefore="Expenses/mo" value={sim.monthlyExpenses} onChange={(v) => setSim((prev) => ({ ...prev, monthlyExpenses: Number(v || 0) }))} />
-          <InputNumber addonBefore="Invest/mo" value={sim.monthlyInvestments} onChange={(v) => setSim((prev) => ({ ...prev, monthlyInvestments: Number(v || 0) }))} />
-          <InputNumber addonBefore="Save/mo" value={sim.monthlySavingsMove} onChange={(v) => setSim((prev) => ({ ...prev, monthlySavingsMove: Number(v || 0) }))} />
-        </Space>
-        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-          <Col xs={24} md={12}><Card><Statistic title="Projected Balance" value={simResult.finalBalance} suffix="MAD" /></Card></Col>
-          <Col xs={24} md={12}><Card><Statistic title="Projected Savings" value={simResult.finalSavings} suffix="MAD" /></Card></Col>
-        </Row>
-        <Line data={simResult.rows.flatMap((row) => ([{ month: row.month, type: 'Balance', value: row.balance }, { month: row.month, type: 'Savings', value: row.savings }]))} xField="month" yField="value" colorField="type" />
-      </Card>
-
-      <Card title="Reports & Analytics">
-        <Space wrap style={{ marginBottom: 16 }}>
-          <Select allowClear placeholder="Month" style={{ width: 120 }} onChange={(month) => setFilters((f) => ({ ...f, month }))} options={Array.from({ length: 12 }, (_, i) => ({ label: i + 1, value: i }))} />
-          <Select allowClear placeholder="Year" style={{ width: 120 }} onChange={(year) => setFilters((f) => ({ ...f, year }))} options={[2024, 2025, 2026].map((y) => ({ value: y }))} />
-          <Select allowClear placeholder="Source" style={{ width: 200 }} onChange={(source) => setFilters((f) => ({ ...f, source }))} options={incomeSources.map((source) => ({ value: source }))} />
-          <Select allowClear placeholder="Category" style={{ width: 220 }} onChange={(category) => setFilters((f) => ({ ...f, category }))} options={expenseCategories.map((category) => ({ value: category }))} />
-        </Space>
-
-        <Tabs items={[
-          { key: 'monthly', label: 'Monthly Summary', children: <Line data={monthlySummary.flatMap((m) => ([{ month: m.month, type: 'Income', value: m.income }, { month: m.month, type: 'Expenses', value: m.expenses }, { month: m.month, type: 'Investments', value: m.investments }]))} xField="month" yField="value" colorField="type" /> },
-          { key: 'income', label: 'Income per Source', children: <Pie data={incomeBySource} angleField="value" colorField="type" label={{ text: 'value' }} /> },
-          { key: 'expense', label: 'Expense per Category', children: <Pie data={expenseByCategory} angleField="value" colorField="type" label={{ text: 'value' }} /> },
-          { key: 'investment', label: 'Investment Growth', children: <Column data={filtered.investments.map((inv) => ({ date: inv.date, value: inv.amount }))} xField="date" yField="value" /> },
-          { key: 'savings', label: 'Savings Progress', children: <Column data={data.savingsGoals.map((goal) => ({ goal: goal.name, value: (goal.currentAmount / goal.targetAmount) * 100 }))} xField="goal" yField="value" /> },
-        ]} />
-      </Card>
-    </Space>
+      <Tabs items={[
+        { key: 'monthly', label: 'Monthly Summary', children: <Line data={monthlySummary.flatMap((m) => ([{ month: m.month, type: 'Income', value: m.income }, { month: m.month, type: 'Expenses', value: m.expenses }, { month: m.month, type: 'Investments', value: m.investments }]))} xField="month" yField="value" colorField="type" /> },
+        { key: 'income', label: 'Income per Source', children: <Pie data={incomeBySource} angleField="value" colorField="type" label={{ text: 'value' }} /> },
+        { key: 'expense', label: 'Expense per Category', children: <Pie data={expenseByCategory} angleField="value" colorField="type" label={{ text: 'value' }} /> },
+        { key: 'investment', label: 'Investment Growth', children: <Column data={filtered.investments.map((inv) => ({ date: inv.date, value: inv.amount }))} xField="date" yField="value" /> },
+        { key: 'savings', label: 'Savings Progress', children: <Column data={data.savingsGoals.map((goal) => ({ goal: goal.name, value: (goal.currentAmount / goal.targetAmount) * 100 }))} xField="goal" yField="value" /> },
+      ]} />
+    </Card>
   );
 }
 
@@ -896,83 +667,6 @@ function RecordModal({ modal, onCancel, onSubmit }) {
       }}
     >
       <Form form={form} layout="vertical">{type ? fieldsByType[type] : null}</Form>
-    </Modal>
-  );
-}
-
-function TransferModal({ open, onCancel, defaults, totals, savingsGoals, onSubmit }) {
-  const [form] = Form.useForm();
-  const [from, setFrom] = useState(defaults.from || 'balance');
-  const [to, setTo] = useState(defaults.to || 'savings');
-
-  useEffect(() => {
-    if (!open) return;
-    setFrom(defaults.from || 'balance');
-    setTo(defaults.to || 'savings');
-  }, [defaults.from, defaults.to, open]);
-
-  const savingsGoalOptions = savingsGoals.map((goal) => ({
-    value: goal.id,
-    label: `${goal.name} (${fmtCurrency(goal.currentAmount)})`,
-  }));
-
-  return (
-    <Modal
-      open={open}
-      title="Transfer Funds"
-      onCancel={onCancel}
-      onOk={() => form.validateFields().then((values) => onSubmit(values))}
-      afterOpenChange={(isOpen) => {
-        if (!isOpen) {
-          form.resetFields();
-          return;
-        }
-        form.setFieldsValue({
-          from: defaults.from || 'balance',
-          to: defaults.to || 'savings',
-          savingsGoalId: defaults.savingsGoalId || undefined,
-          amount: undefined,
-          businessName: 'Internal Allocation',
-          investmentType: 'Operations',
-        });
-      }}
-    >
-      <Space direction="vertical" style={{ width: '100%' }}>
-        <Alert type="info" showIcon message={from === 'balance' ? `Available balance: ${fmtCurrency(totals.totalBalance)}` : 'Select savings goal and amount.'} />
-        <Form
-          form={form}
-          layout="vertical"
-          onValuesChange={(changedValues) => {
-            if (Object.prototype.hasOwnProperty.call(changedValues, 'from')) setFrom(changedValues.from);
-            if (Object.prototype.hasOwnProperty.call(changedValues, 'to')) setTo(changedValues.to);
-          }}
-        >
-          <Form.Item name="from" label="From" rules={[{ required: true }]}>
-            <Select options={TRANSFER_FROM_OPTIONS} />
-          </Form.Item>
-          <Form.Item name="to" label="To" rules={[{ required: true }]}>
-            <Select options={TRANSFER_TO_OPTIONS.filter((item) => item.value !== from)} />
-          </Form.Item>
-          {(from === 'savings' || to === 'savings') ? (
-            <Form.Item name="savingsGoalId" label="Savings Goal" rules={[{ required: true }]}>
-              <Select options={savingsGoalOptions} />
-            </Form.Item>
-          ) : null}
-          <Form.Item name="amount" label="Amount" rules={[{ required: true }]}>
-            <InputNumber style={{ width: '100%' }} min={1} />
-          </Form.Item>
-          {to === 'investments' ? (
-            <>
-              <Form.Item name="businessName" label="Business Name">
-                <Input />
-              </Form.Item>
-              <Form.Item name="investmentType" label="Investment Type">
-                <Select options={investmentTypes.map((type) => ({ value: type, label: type }))} />
-              </Form.Item>
-            </>
-          ) : null}
-        </Form>
-      </Space>
     </Modal>
   );
 }
