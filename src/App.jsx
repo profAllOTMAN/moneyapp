@@ -817,6 +817,7 @@ function Reports({ data, monthlySummary, incomeBySource, expenseByCategory, tota
         { label: comparison.left || 'Left', value: leftValue },
         { label: comparison.right || 'Right', value: rightValue },
       ],
+      ready: Boolean(comparison.left && comparison.right),
     };
   }, [comparison, data.expenses, data.incomes, data.investments, monthlySummary]);
 
@@ -908,7 +909,11 @@ function Reports({ data, monthlySummary, incomeBySource, expenseByCategory, tota
           <Col xs={24} md={8}><Card><Statistic title="Difference" value={comparisonResult.delta} suffix="MAD" /></Card></Col>
           <Col xs={24}><Text type="secondary">Delta: {comparisonResult.deltaPct.toFixed(1)}%</Text></Col>
           <Col xs={24}>
-            <Column data={comparisonResult.chartData} xField="label" yField="value" />
+            {comparisonResult.ready ? (
+              <Column data={comparisonResult.chartData} xField="label" yField="value" />
+            ) : (
+              <Alert type="info" showIcon message="Select left and right values to render comparison." />
+            )}
           </Col>
         </Row>
       </Card>
