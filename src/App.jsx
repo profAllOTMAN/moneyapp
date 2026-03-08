@@ -59,6 +59,15 @@ const TRANSACTION_TAG_COLORS = {
   Expense: 'red',
   Investment: 'purple',
 };
+const TRANSFER_FROM_OPTIONS = [
+  { value: 'balance', label: 'Balance' },
+  { value: 'savings', label: 'Savings Goal' },
+];
+const TRANSFER_TO_OPTIONS = [
+  { value: 'savings', label: 'Savings Goal' },
+  { value: 'balance', label: 'Balance' },
+  { value: 'investments', label: 'Investments' },
+];
 
 function fmtCurrency(value) {
   return `${Number(value || 0).toLocaleString()} MAD`;
@@ -107,6 +116,7 @@ export default function App() {
   const [current, setCurrent] = useState('dashboard');
   const [data, setData] = useState(defaultData);
   const [modal, setModal] = useState({ open: false, type: null, record: null });
+  const [transferModal, setTransferModal] = useState({ open: false, defaults: { from: 'balance', to: 'savings', savingsGoalId: null } });
   const [autoSweepMonth, setAutoSweepMonth] = useState('');
   const [mobileNav, setMobileNav] = useState({ isMobile: false, collapsed: false });
 
@@ -362,6 +372,116 @@ export default function App() {
   ];
 
   const openModal = (type, record = null) => setModal({ open: true, type, record });
+  const openTransfer = (defaults = {}) => {
+    setTransferModal({
+      open: true,
+      defaults: {
+        from: defaults.from || 'balance',
+        to: defaults.to || 'savings',
+        savingsGoalId: defaults.savingsGoalId || null,
+      },
+    });
+  };
+
+  const transferFunds = async (values) => {
+    const amount = Number(values.amount || 0);
+    const from = values.from;
+    const to = values.to;
+    const now = dayjs().format('YYYY-MM-DD');
+    const goal = data.savingsGoals.find((g) => g.id === values.savingsGoalId);
+
+    if (amount <= 0) {
+      setError('Amount must be greater than zero.');
+      return false;
+    }
+    if (from === to) {
+      setError('Select different source and destination.');
+      return false;
+    }
+
+    if (from === 'balance' && to === 'savings') {
+      if (!goal) {
+        setError('Select a savings goal.');
+        return false;
+      }
+      if (totals.totalBalance < amount) {
+        setError('Not enough balance for this transfer.');
+        return false;
+      }
+      const out = await saveRecord('expenses', {
+        id: crypto.randomUUID(),
+        amount,
+        category: 'Business expenses',
+        date: now,
+        paymentMethod: 'Internal',
+        notes: `Internal transfer to savings: ${goal.name}`,
+      });
+      if (!out) return false;
+      return saveRecord('savingsGoals', {
+        ...goal,
+        currentAmount: Number(goal.currentAmount) + amount,
+      });
+    }
+
+    if (from === 'savings' && to === 'balance') {
+      if (!goal) {
+        setError('Select a savings goal.');
+        return false;
+      }
+      if (/emergency/i.test(goal.name || '')) {
+        setError('Emergency savings are protected and cannot be withdrawn.');
+        return false;
+      }
+      if (Number(goal.currentAmount) < amount) {
+        setError('Not enough funds in selected savings goal.');
+        return false;
+      }
+      const out = await saveRecord('savingsGoals', {
+        ...goal,
+        currentAmount: Number(goal.currentAmount) - amount,
+      });
+      if (!out) return false;
+      return saveRecord('incomes', {
+        id: crypto.randomUUID(),
+        amount,
+        source: 'Investment Returns',
+        date: now,
+        description: `Internal transfer from savings: ${goal.name}`,
+        tag: 'Internal transfer',
+      });
+    }
+
+    if (from === 'savings' && to === 'investments') {
+      if (!goal) {
+        setError('Select a savings goal.');
+        return false;
+      }
+      if (/emergency/i.test(goal.name || '')) {
+        setError('Emergency savings are protected and cannot be invested.');
+        return false;
+      }
+      if (Number(goal.currentAmount) < amount) {
+        setError('Not enough funds in selected savings goal.');
+        return false;
+      }
+      const out = await saveRecord('savingsGoals', {
+        ...goal,
+        currentAmount: Number(goal.currentAmount) - amount,
+      });
+      if (!out) return false;
+      return saveRecord('investments', {
+        id: crypto.randomUUID(),
+        amount,
+        businessName: values.businessName || 'Internal allocation',
+        investmentType: values.investmentType || 'Operations',
+        date: now,
+        notes: `Internal transfer from savings: ${goal.name}`,
+      });
+    }
+
+    setError('Transfer path not supported.');
+    return false;
+  };
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -405,6 +525,9 @@ export default function App() {
 
           {current === 'dashboard' && (
             <Space direction="vertical" size="large" style={{ width: '100%' }}>
+              <Card>
+                <Button onClick={() => openTransfer({ from: 'balance', to: 'savings' })}>Transfer Funds</Button>
+              </Card>
               <Card title="Savings Goals Progress">
                 <Space direction="vertical" style={{ width: '100%' }}>
                   {data.savingsGoals.length === 0 ? <Text type="secondary">No savings goals yet. Add your first goal from the Savings Goals tab.</Text> : null}
@@ -437,7 +560,12 @@ export default function App() {
                   ['Total Savings', totals.totalSavings, '#2563eb'],
                 ].map(([title, value, color]) => (
                   <Col xs={24} sm={12} lg={8} xl={4} key={title}>
-                    <Card><Statistic title={title} value={value} suffix="MAD" valueStyle={{ color }} /></Card>
+                    <Card
+                      hoverable={title === 'Total Balance'}
+                      onClick={title === 'Total Balance' ? () => openTransfer({ from: 'balance', to: 'savings' }) : undefined}
+                    >
+                      <Statistic title={title === 'Total Balance' ? 'Total Balance (click to transfer)' : title} value={value} suffix="MAD" valueStyle={{ color }} />
+                    </Card>
                   </Col>
                 ))}
               </Row>
@@ -475,6 +603,7 @@ export default function App() {
                   currentAmount: Number(goal.currentAmount) + Number(amount),
                 });
               }}
+              onTransfer={(goalId) => openTransfer({ from: 'savings', to: 'balance', savingsGoalId: goalId })}
             />
           )}
 
@@ -508,6 +637,17 @@ export default function App() {
           setModal({ open: false, type: null, record: null });
         }}
       />
+      <TransferModal
+        open={transferModal.open}
+        defaults={transferModal.defaults}
+        savingsGoals={data.savingsGoals}
+        totals={totals}
+        onCancel={() => setTransferModal((prev) => ({ ...prev, open: false }))}
+        onSubmit={async (values) => {
+          const ok = await transferFunds(values);
+          if (ok) setTransferModal((prev) => ({ ...prev, open: false }));
+        }}
+      />
     </Layout>
   );
 }
@@ -523,7 +663,7 @@ const transactionColumns = [
   },
 ];
 
-function ModuleTable({ current, data, onOpen, onDelete, onAddFunds }) {
+function ModuleTable({ current, data, onOpen, onDelete, onAddFunds, onTransfer }) {
   const config = {
     income: { key: 'incomes', title: 'Income Sources', color: 'green' },
     expenses: { key: 'expenses', title: 'Expenses', color: 'red' },
@@ -579,7 +719,10 @@ function ModuleTable({ current, data, onOpen, onDelete, onAddFunds }) {
         <Space>
           <Button size="small" onClick={() => onOpen(current, record)}>Edit</Button>
           {current === 'savings' ? (
-            <Button size="small" type="primary" onClick={() => onAddFunds(record.id, 100)}>+100 MAD</Button>
+            <>
+              <Button size="small" type="primary" onClick={() => onAddFunds(record.id, 100)}>+100 MAD</Button>
+              <Button size="small" onClick={() => onTransfer(record.id)}>Transfer</Button>
+            </>
           ) : null}
           <Button danger size="small" onClick={() => onDelete(config.key, record.id)}>Delete</Button>
         </Space>
@@ -593,6 +736,83 @@ function ModuleTable({ current, data, onOpen, onDelete, onAddFunds }) {
       {current === 'expenses' && <Select allowClear placeholder="Filter by category" style={{ width: 220, marginBottom: 12 }} options={expenseCategories.map((category) => ({ value: category }))} onChange={setFilter} />}
       <Table rowKey="id" dataSource={rows} columns={columns} scroll={{ x: 760 }} />
     </Card>
+  );
+}
+
+function TransferModal({ open, defaults, savingsGoals, totals, onCancel, onSubmit }) {
+  const [form] = Form.useForm();
+  const [from, setFrom] = useState(defaults?.from || 'balance');
+  const [to, setTo] = useState(defaults?.to || 'savings');
+
+  useEffect(() => {
+    if (!open) return;
+    setFrom(defaults?.from || 'balance');
+    setTo(defaults?.to || 'savings');
+    form.setFieldsValue({
+      from: defaults?.from || 'balance',
+      to: defaults?.to || 'savings',
+      savingsGoalId: defaults?.savingsGoalId || undefined,
+      amount: undefined,
+      businessName: 'Internal allocation',
+      investmentType: 'Operations',
+    });
+  }, [defaults?.from, defaults?.savingsGoalId, defaults?.to, form, open]);
+
+  const savingsGoalOptions = savingsGoals.map((goal) => ({
+    value: goal.id,
+    label: `${goal.name} (${fmtCurrency(goal.currentAmount)})${/emergency/i.test(goal.name || '') ? ' - protected' : ''}`,
+  }));
+
+  return (
+    <Modal
+      open={open}
+      title="Transfer Funds"
+      onCancel={onCancel}
+      onOk={() => form.validateFields().then(onSubmit)}
+    >
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Alert
+          type="info"
+          showIcon
+          message={from === 'balance'
+            ? `Available balance: ${fmtCurrency(totals.totalBalance)}`
+            : 'Emergency savings goals are protected and cannot be moved out.'}
+        />
+        <Form
+          form={form}
+          layout="vertical"
+          onValuesChange={(changed) => {
+            if (Object.prototype.hasOwnProperty.call(changed, 'from')) setFrom(changed.from);
+            if (Object.prototype.hasOwnProperty.call(changed, 'to')) setTo(changed.to);
+          }}
+        >
+          <Form.Item name="from" label="From" rules={[{ required: true }]}>
+            <Select options={TRANSFER_FROM_OPTIONS} />
+          </Form.Item>
+          <Form.Item name="to" label="To" rules={[{ required: true }]}>
+            <Select options={TRANSFER_TO_OPTIONS.filter((option) => option.value !== from)} />
+          </Form.Item>
+          {(from === 'savings' || to === 'savings') ? (
+            <Form.Item name="savingsGoalId" label="Savings Goal" rules={[{ required: true }]}>
+              <Select options={savingsGoalOptions} />
+            </Form.Item>
+          ) : null}
+          <Form.Item name="amount" label="Amount (MAD)" rules={[{ required: true }]}>
+            <InputNumber style={{ width: '100%' }} min={1} />
+          </Form.Item>
+          {to === 'investments' ? (
+            <>
+              <Form.Item name="businessName" label="Business Name">
+                <Input />
+              </Form.Item>
+              <Form.Item name="investmentType" label="Investment Type">
+                <Select options={investmentTypes.map((type) => ({ value: type, label: type }))} />
+              </Form.Item>
+            </>
+          ) : null}
+        </Form>
+      </Space>
+    </Modal>
   );
 }
 
