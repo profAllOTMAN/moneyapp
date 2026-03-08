@@ -381,7 +381,7 @@ export default function App() {
     setTransferOpen(true);
   };
 
-  const transferFunds = useCallback(async (values) => {
+  const transferFunds = async (values) => {
     const amount = Number(values.amount || 0);
     const from = values.from;
     const to = values.to;
@@ -479,7 +479,7 @@ export default function App() {
 
     setError('Transfer path not supported.');
     return false;
-  }, [data.savingsGoals, saveRecord, totals.totalBalance]);
+  };
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
