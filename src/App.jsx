@@ -1029,8 +1029,14 @@ function RecordModal({ modal, onCancel, onSubmit }) {
 
 function TransferModal({ open, onCancel, defaults, totals, savingsGoals, onSubmit }) {
   const [form] = Form.useForm();
-  const from = Form.useWatch('from', form);
-  const to = Form.useWatch('to', form);
+  const [from, setFrom] = useState(defaults.from || 'balance');
+  const [to, setTo] = useState(defaults.to || 'savings');
+
+  useEffect(() => {
+    if (!open) return;
+    setFrom(defaults.from || 'balance');
+    setTo(defaults.to || 'savings');
+  }, [defaults.from, defaults.to, open]);
 
   const savingsGoalOptions = savingsGoals.map((goal) => ({
     value: goal.id,
@@ -1071,7 +1077,18 @@ function TransferModal({ open, onCancel, defaults, totals, savingsGoals, onSubmi
             ? `Available balance: ${fmtCurrency(totals.totalBalance)}`
             : 'Choose a savings goal as source to validate available funds.'}
         />
-        <Form form={form} layout="vertical">
+        <Form
+          form={form}
+          layout="vertical"
+          onValuesChange={(changedValues) => {
+            if (Object.prototype.hasOwnProperty.call(changedValues, 'from')) {
+              setFrom(changedValues.from);
+            }
+            if (Object.prototype.hasOwnProperty.call(changedValues, 'to')) {
+              setTo(changedValues.to);
+            }
+          }}
+        >
           <Form.Item name="from" label="From" rules={[{ required: true }]}>
             <Select options={TRANSFER_FROM_OPTIONS} />
           </Form.Item>
