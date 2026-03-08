@@ -1,32 +1,33 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Layout,
-  Menu,
-  Typography,
-  Card,
-  Row,
-  Col,
-  Table,
-  Tag,
-  Progress,
+  Alert,
   Button,
-  Modal,
+  Card,
+  Col,
+  DatePicker,
   Form,
   Input,
   InputNumber,
-  DatePicker,
+  Layout,
+  Menu,
+  Modal,
+  Progress,
+  Row,
   Select,
   Space,
+  Spin,
   Statistic,
+  Table,
   Tabs,
-  Alert,
+  Tag,
+  Typography,
 } from 'antd';
 import { Pie, Line, Column } from '@ant-design/charts';
 import dayjs from 'dayjs';
+import { hasSupabaseEnv, supabase } from './supabaseClient';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
-const STORAGE_KEY = 'moneyflow-pro-data-v1';
 
 const incomeSources = ['Job', 'Freelance', 'Offline Business', 'Investment Returns'];
 const expenseCategories = ['Food', 'Transport', 'Rent', 'Bills', 'Entertainment', 'Shopping', 'Health', 'Business expenses'];
@@ -36,26 +37,22 @@ const defaultData = {
   incomes: [],
   expenses: [],
   investments: [],
-  savingsGoals: [
-    {
-      id: crypto.randomUUID(),
-      name: 'Emergency fund',
-      targetAmount: 3000,
-      currentAmount: 900,
-      deadline: dayjs().add(7, 'month').format('YYYY-MM-DD'),
-    },
-  ],
+  savingsGoals: [],
 };
 
-function parseData() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return defaultData;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return defaultData;
-  }
-}
+const KEY_TO_TYPE = {
+  incomes: 'income',
+  expenses: 'expenses',
+  investments: 'investments',
+  savingsGoals: 'savings',
+};
+
+const TYPE_TO_KEY = {
+  income: 'incomes',
+  expenses: 'expenses',
+  investments: 'investments',
+  savings: 'savingsGoals',
+};
 
 function fmtCurrency(value) {
   return `${Number(value || 0).toLocaleString()} MAD`;
@@ -69,15 +66,150 @@ function monthKey(date) {
   return dayjs(date).format('YYYY-MM');
 }
 
+function mapRowsToData(rows) {
+  const next = { ...defaultData };
+  rows.forEach((row) => {
+    const key = TYPE_TO_KEY[row.record_type];
+    if (!key) return;
+    next[key].push({
+      ...row.payload,
+      id: row.id,
+    });
+  });
+  return next;
+}
+
+function mapRecordToRow(recordType, userId, record) {
+  const { id, ...payload } = record;
+  return {
+    id,
+    user_id: userId,
+    record_type: recordType,
+    payload,
+  };
+}
+
 export default function App() {
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [error, setError] = useState('');
   const [current, setCurrent] = useState('dashboard');
-  const [data, setData] = useState(parseData);
+  const [data, setData] = useState(defaultData);
   const [modal, setModal] = useState({ open: false, type: null, record: null });
 
-  const save = (next) => {
-    setData(next);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  };
+  const user = session?.user ?? null;
+
+  const loadData = useCallback(async (userId) => {
+    if (!supabase || !userId) return;
+    setDataLoading(true);
+    const { data: rows, error: loadError } = await supabase
+      .from('finance_records')
+      .select('id,record_type,payload')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (loadError) {
+      setError(loadError.message);
+      setDataLoading(false);
+      return;
+    }
+
+    setError('');
+    setData(mapRowsToData(rows || []));
+    setDataLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false);
+      return;
+    }
+
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data: authData }) => {
+      if (!mounted) return;
+      setSession(authData.session ?? null);
+      setAuthLoading(false);
+    });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) {
+        setData(defaultData);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    loadData(user.id);
+  }, [user?.id, loadData]);
+
+  useEffect(() => {
+    if (!supabase || !user?.id) return undefined;
+
+    const channel = supabase
+      .channel(`finance-records-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'finance_records',
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => {
+          loadData(user.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [loadData, user?.id]);
+
+  const saveRecord = useCallback(
+    async (collectionKey, record) => {
+      if (!supabase || !user?.id) return;
+      const recordType = KEY_TO_TYPE[collectionKey];
+      const row = mapRecordToRow(recordType, user.id, record);
+      const { error: upsertError } = await supabase
+        .from('finance_records')
+        .upsert(row, { onConflict: 'id' });
+
+      if (upsertError) {
+        setError(upsertError.message);
+      } else {
+        setError('');
+      }
+    },
+    [user?.id]
+  );
+
+  const removeRecord = useCallback(
+    async (collectionKey, id) => {
+      if (!supabase || !user?.id) return;
+      const { error: deleteError } = await supabase
+        .from('finance_records')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('record_type', KEY_TO_TYPE[collectionKey])
+        .eq('id', id);
+
+      if (deleteError) {
+        setError(deleteError.message);
+      }
+    },
+    [user?.id]
+  );
 
   const totals = useMemo(() => {
     const totalIncome = sum(data.incomes);
@@ -135,6 +267,38 @@ export default function App() {
     return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
   }, [data]);
 
+  const incomeBySource = incomeSources
+    .map((source) => ({ type: source, value: sum(data.incomes.filter((i) => i.source === source)) }))
+    .filter((x) => x.value > 0);
+  const expenseByCategory = expenseCategories
+    .map((category) => ({ type: category, value: sum(data.expenses.filter((e) => e.category === category)) }))
+    .filter((x) => x.value > 0);
+
+  if (!hasSupabaseEnv()) {
+    return (
+      <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
+        <Alert
+          type="warning"
+          showIcon
+          message="Supabase env vars are missing"
+          description="Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the dev server."
+        />
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <AuthCard onError={setError} error={error} />;
+  }
+
   const menuItems = [
     { key: 'dashboard', label: 'Dashboard' },
     { key: 'income', label: 'Income' },
@@ -147,24 +311,6 @@ export default function App() {
 
   const openModal = (type, record = null) => setModal({ open: true, type, record });
 
-  const removeRecord = (type, id) => {
-    save({ ...data, [type]: data[type].filter((item) => item.id !== id) });
-  };
-
-  const transactionColumns = [
-    { title: 'Type', dataIndex: 'kind', key: 'kind', render: (value) => <Tag>{value}</Tag> },
-    { title: 'Amount', dataIndex: 'amount', key: 'amount', render: fmtCurrency },
-    { title: 'Date', dataIndex: 'date', key: 'date' },
-    {
-      title: 'Details',
-      key: 'details',
-      render: (_, record) => record.source || record.category || record.businessName,
-    },
-  ];
-
-  const incomeBySource = incomeSources.map((source) => ({ type: source, value: sum(data.incomes.filter((i) => i.source === source)) })).filter((x) => x.value > 0);
-  const expenseByCategory = expenseCategories.map((category) => ({ type: category, value: sum(data.expenses.filter((e) => e.category === category)) })).filter((x) => x.value > 0);
-
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider breakpoint="lg" collapsedWidth="0" theme="light">
@@ -172,8 +318,17 @@ export default function App() {
         <Menu selectedKeys={[current]} mode="inline" items={menuItems} onClick={(e) => setCurrent(e.key)} />
       </Sider>
       <Layout>
-        <Header className="header"><Title level={4} style={{ margin: 0 }}>Personal Finance Management</Title></Header>
+        <Header className="header" style={{ justifyContent: 'space-between' }}>
+          <Title level={4} style={{ margin: 0 }}>Personal Finance Management</Title>
+          <Space>
+            <Text type="secondary">{user.email}</Text>
+            <Button onClick={() => supabase.auth.signOut()}>Sign out</Button>
+          </Space>
+        </Header>
         <Content className="content">
+          {error ? <Alert type="error" showIcon style={{ marginBottom: 16 }} message={error} /> : null}
+          {dataLoading ? <Spin style={{ marginBottom: 16 }} /> : null}
+
           {current === 'dashboard' && (
             <Space direction="vertical" size="large" style={{ width: '100%' }}>
               <Row gutter={[16, 16]}>
@@ -226,13 +381,20 @@ export default function App() {
           )}
 
           {['income', 'expenses', 'investments', 'savings'].includes(current) && (
-            <ModuleTable current={current} data={data} onOpen={openModal} onDelete={removeRecord} onAddFunds={(goalId, amount) => {
-              const next = {
-                ...data,
-                savingsGoals: data.savingsGoals.map((goal) => goal.id === goalId ? { ...goal, currentAmount: Number(goal.currentAmount) + Number(amount) } : goal),
-              };
-              save(next);
-            }} />
+            <ModuleTable
+              current={current}
+              data={data}
+              onOpen={openModal}
+              onDelete={removeRecord}
+              onAddFunds={async (goalId, amount) => {
+                const goal = data.savingsGoals.find((item) => item.id === goalId);
+                if (!goal) return;
+                await saveRecord('savingsGoals', {
+                  ...goal,
+                  currentAmount: Number(goal.currentAmount) + Number(amount),
+                });
+              }}
+            />
           )}
 
           {current === 'reports' && (
@@ -240,7 +402,12 @@ export default function App() {
           )}
 
           {current === 'settings' && (
-            <Card title="Settings"><Text>Data is stored in browser localStorage. Clear browser storage to reset.</Text></Card>
+            <Card title="Settings">
+              <Space direction="vertical">
+                <Text>Supabase realtime sync is enabled for your account.</Text>
+                <Text type="secondary">Project URL: {import.meta.env.VITE_SUPABASE_URL}</Text>
+              </Space>
+            </Card>
           )}
         </Content>
       </Layout>
@@ -248,21 +415,32 @@ export default function App() {
       <RecordModal
         modal={modal}
         onCancel={() => setModal({ open: false, type: null, record: null })}
-        onSubmit={(type, values) => {
-          const keyMap = { income: 'incomes', expenses: 'expenses', investments: 'investments', savings: 'savingsGoals' };
-          const key = keyMap[type];
-          const normalized = { ...values, date: values.date ? dayjs(values.date).format('YYYY-MM-DD') : undefined, deadline: values.deadline ? dayjs(values.deadline).format('YYYY-MM-DD') : undefined, id: modal.record?.id || crypto.randomUUID() };
-          const next = {
-            ...data,
-            [key]: modal.record ? data[key].map((item) => (item.id === modal.record.id ? normalized : item)) : [...data[key], normalized],
+        onSubmit={async (type, values) => {
+          const key = TYPE_TO_KEY[type];
+          const normalized = {
+            ...values,
+            date: values.date ? dayjs(values.date).format('YYYY-MM-DD') : undefined,
+            deadline: values.deadline ? dayjs(values.deadline).format('YYYY-MM-DD') : undefined,
+            id: modal.record?.id || crypto.randomUUID(),
           };
-          save(next);
+          await saveRecord(key, normalized);
           setModal({ open: false, type: null, record: null });
         }}
       />
     </Layout>
   );
 }
+
+const transactionColumns = [
+  { title: 'Type', dataIndex: 'kind', key: 'kind', render: (value) => <Tag>{value}</Tag> },
+  { title: 'Amount', dataIndex: 'amount', key: 'amount', render: fmtCurrency },
+  { title: 'Date', dataIndex: 'date', key: 'date' },
+  {
+    title: 'Details',
+    key: 'details',
+    render: (_, record) => record.source || record.category || record.businessName,
+  },
+];
 
 function ModuleTable({ current, data, onOpen, onDelete, onAddFunds }) {
   const config = {
@@ -436,5 +614,65 @@ function RecordModal({ modal, onCancel, onSubmit }) {
     >
       <Form form={form} layout="vertical">{type ? fieldsByType[type] : null}</Form>
     </Modal>
+  );
+}
+
+function AuthCard({ onError, error }) {
+  const [form] = Form.useForm();
+  const [mode, setMode] = useState('signin');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    const values = await form.validateFields();
+    setLoading(true);
+    onError('');
+
+    const action = mode === 'signin'
+      ? supabase.auth.signInWithPassword({
+          email: values.email,
+          password: values.password,
+        })
+      : supabase.auth.signUp({
+          email: values.email,
+          password: values.password,
+        });
+
+    const { error: authError } = await action;
+
+    if (authError) {
+      onError(authError.message);
+    } else if (mode === 'signup') {
+      onError('Account created. If email confirmation is enabled, verify your inbox before signing in.');
+      setMode('signin');
+    }
+
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 16 }}>
+      <Card title="MoneyFlow Pro" style={{ width: '100%', maxWidth: 420 }}>
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Text type="secondary">Realtime multi-user workspace via Supabase.</Text>
+          {error ? <Alert type={error.startsWith('Account created') ? 'success' : 'error'} showIcon message={error} /> : null}
+          <Form form={form} layout="vertical">
+            <Form.Item name="email" label="Email" rules={[{ required: true, type: 'email' }]}>
+              <Input />
+            </Form.Item>
+            <Form.Item name="password" label="Password" rules={[{ required: true, min: 6 }]}>
+              <Input.Password />
+            </Form.Item>
+          </Form>
+          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Button onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>
+              {mode === 'signin' ? 'Need an account?' : 'Have an account?'}
+            </Button>
+            <Button type="primary" loading={loading} onClick={submit}>
+              {mode === 'signin' ? 'Sign in' : 'Sign up'}
+            </Button>
+          </Space>
+        </Space>
+      </Card>
+    </div>
   );
 }
