@@ -377,6 +377,29 @@ export default function App() {
 
           {current === 'dashboard' && (
             <Space direction="vertical" size="large" style={{ width: '100%' }}>
+              <Card title="Savings Goals Progress">
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {data.savingsGoals.length === 0 ? <Text type="secondary">No savings goals yet. Add your first goal from the Savings Goals tab.</Text> : null}
+                  {data.savingsGoals.map((goal) => {
+                    const pct = Math.min(100, (goal.currentAmount / goal.targetAmount) * 100);
+                    return (
+                      <div key={goal.id}>
+                        <Text strong>{goal.name}</Text>
+                        <Progress percent={Number(pct.toFixed(1))} />
+                        <Text type="secondary">{fmtCurrency(goal.currentAmount)} / {fmtCurrency(goal.targetAmount)} · deadline {goal.deadline}</Text>
+                      </div>
+                    );
+                  })}
+                  {autoSweepMonth === dayjs().format('YYYY-MM') ? (
+                    <Alert
+                      type="success"
+                      showIcon
+                      message={`After day 25, remaining balance was auto-moved to savings for ${autoSweepMonth}.`}
+                    />
+                  ) : null}
+                </Space>
+              </Card>
+
               <Row gutter={[16, 16]}>
                 {[
                   ['Total Balance', totals.totalBalance, '#111827'],
@@ -399,31 +422,7 @@ export default function App() {
               </Row>
 
               <Row gutter={[16, 16]}>
-                <Col xs={24} lg={14}><Card title="Latest Transactions"><Table rowKey="id" dataSource={latestTransactions} columns={transactionColumns} pagination={false} /></Card></Col>
-                <Col xs={24} lg={10}>
-                  <Card title="Savings Goals Progress">
-                    <Space direction="vertical" style={{ width: '100%' }}>
-                      {data.savingsGoals.length === 0 ? <Text type="secondary">No savings goals yet. Add your first goal from the Savings Goals tab.</Text> : null}
-                      {data.savingsGoals.map((goal) => {
-                        const pct = Math.min(100, (goal.currentAmount / goal.targetAmount) * 100);
-                        return (
-                          <div key={goal.id}>
-                            <Text strong>{goal.name}</Text>
-                            <Progress percent={Number(pct.toFixed(1))} />
-                            <Text type="secondary">{fmtCurrency(goal.currentAmount)} / {fmtCurrency(goal.targetAmount)} · deadline {goal.deadline}</Text>
-                          </div>
-                        );
-                      })}
-                      {autoSweepMonth === dayjs().format('YYYY-MM') ? (
-                        <Alert
-                          type="success"
-                          showIcon
-                          message={`After day 25, remaining balance was auto-moved to savings for ${autoSweepMonth}.`}
-                        />
-                      ) : null}
-                    </Space>
-                  </Card>
-                </Col>
+                <Col xs={24}><Card title="Latest Transactions"><Table rowKey="id" dataSource={latestTransactions} columns={transactionColumns} pagination={false} /></Card></Col>
               </Row>
 
               <Card title="Financial Insights">
