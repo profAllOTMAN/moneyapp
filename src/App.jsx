@@ -39,6 +39,7 @@ const defaultData = {
   investments: [],
   savingsGoals: [],
 };
+const AUTO_SWEEP_PREFIX = 'moneyflow-pro-auto-sweep';
 
 const KEY_TO_TYPE = {
   incomes: 'income',
@@ -89,6 +90,10 @@ function mapRecordToRow(recordType, userId, record) {
   };
 }
 
+function sweepMarkerKey(userId) {
+  return `${AUTO_SWEEP_PREFIX}-${userId}`;
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -97,6 +102,7 @@ export default function App() {
   const [current, setCurrent] = useState('dashboard');
   const [data, setData] = useState(defaultData);
   const [modal, setModal] = useState({ open: false, type: null, record: null });
+  const [autoSweepMonth, setAutoSweepMonth] = useState('');
 
   const user = session?.user ?? null;
 
@@ -153,6 +159,14 @@ export default function App() {
   }, [user?.id, loadData]);
 
   useEffect(() => {
+    if (!user?.id) {
+      setAutoSweepMonth('');
+      return;
+    }
+    setAutoSweepMonth(localStorage.getItem(sweepMarkerKey(user.id)) || '');
+  }, [user?.id]);
+
+  useEffect(() => {
     if (!supabase || !user?.id) return undefined;
 
     const channel = supabase
@@ -178,7 +192,7 @@ export default function App() {
 
   const saveRecord = useCallback(
     async (collectionKey, record) => {
-      if (!supabase || !user?.id) return;
+      if (!supabase || !user?.id) return false;
       const recordType = KEY_TO_TYPE[collectionKey];
       const row = mapRecordToRow(recordType, user.id, record);
       const { error: upsertError } = await supabase
@@ -187,8 +201,10 @@ export default function App() {
 
       if (upsertError) {
         setError(upsertError.message);
+        return false;
       } else {
         setError('');
+        return true;
       }
     },
     [user?.id]
@@ -224,6 +240,36 @@ export default function App() {
       totalBalance: totalIncome - totalExpenses - totalInvestments,
     };
   }, [data]);
+
+  useEffect(() => {
+    if (!user?.id || !data.savingsGoals.length) return;
+
+    const today = dayjs();
+    const month = today.format('YYYY-MM');
+    if (today.date() < 25) return;
+    if (autoSweepMonth === month) return;
+    if (totals.totalBalance <= 0) return;
+
+    let cancelled = false;
+
+    const runAutoSweep = async () => {
+      const firstGoal = data.savingsGoals[0];
+      const saved = await saveRecord('savingsGoals', {
+        ...firstGoal,
+        currentAmount: Number(firstGoal.currentAmount || 0) + Number(totals.totalBalance),
+      });
+      if (!saved || cancelled) return;
+
+      const marker = sweepMarkerKey(user.id);
+      localStorage.setItem(marker, month);
+      setAutoSweepMonth(month);
+    };
+
+    void runAutoSweep();
+    return () => {
+      cancelled = true;
+    };
+  }, [autoSweepMonth, data.savingsGoals, saveRecord, totals.totalBalance, user?.id]);
 
   const latestTransactions = useMemo(() => {
     const merged = [
@@ -301,10 +347,10 @@ export default function App() {
 
   const menuItems = [
     { key: 'dashboard', label: 'Dashboard' },
+    { key: 'savings', label: 'Savings Goals' },
     { key: 'income', label: 'Income' },
     { key: 'expenses', label: 'Expenses' },
     { key: 'investments', label: 'Investments' },
-    { key: 'savings', label: 'Savings Goals' },
     { key: 'reports', label: 'Reports' },
     { key: 'settings', label: 'Settings' },
   ];
@@ -357,6 +403,7 @@ export default function App() {
                 <Col xs={24} lg={10}>
                   <Card title="Savings Goals Progress">
                     <Space direction="vertical" style={{ width: '100%' }}>
+                      {data.savingsGoals.length === 0 ? <Text type="secondary">No savings goals yet. Add your first goal from the Savings Goals tab.</Text> : null}
                       {data.savingsGoals.map((goal) => {
                         const pct = Math.min(100, (goal.currentAmount / goal.targetAmount) * 100);
                         return (
@@ -367,6 +414,13 @@ export default function App() {
                           </div>
                         );
                       })}
+                      {autoSweepMonth === dayjs().format('YYYY-MM') ? (
+                        <Alert
+                          type="success"
+                          showIcon
+                          message={`After day 25, remaining balance was auto-moved to savings for ${autoSweepMonth}.`}
+                        />
+                      ) : null}
                     </Space>
                   </Card>
                 </Col>
