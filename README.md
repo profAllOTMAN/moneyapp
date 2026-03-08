@@ -32,3 +32,18 @@ To deploy:
 
 - App data is stored in browser `localStorage`.
 - Dashboard supports automatic post-25th monthly balance sweep into savings goals.
+
+
+## Supabase migrations
+
+This repo now includes Supabase project scaffolding:
+- `supabase/config.toml` linked to project ref `ijbqukmxrsvqviabeaie`
+- `supabase/migrations/20260308000000_new-migration.sql`
+
+Run these commands locally (with Supabase CLI installed and authenticated):
+
+```bash
+supabase link --project-ref ijbqukmxrsvqviabeaie
+supabase migration new new-migration
+supabase db push
+```
