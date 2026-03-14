@@ -119,6 +119,11 @@ export default function App() {
   const [transferModal, setTransferModal] = useState({ open: false, defaults: { from: 'balance', to: 'savings', savingsGoalId: null } });
   const [autoSweepMonth, setAutoSweepMonth] = useState('');
   const [mobileNav, setMobileNav] = useState({ isMobile: false, collapsed: false });
+  const [dashboardFilter, setDashboardFilter] = useState({
+    mode: 'month',
+    month: dayjs(),
+    range: null,
+  });
 
   const user = session?.user ?? null;
 
@@ -336,6 +341,82 @@ export default function App() {
     .map((category) => ({ type: category, value: sum(data.expenses.filter((e) => e.category === category)) }))
     .filter((x) => x.value > 0);
 
+  const dashboardRange = useMemo(() => {
+    if (dashboardFilter.mode === 'month' && dashboardFilter.month) {
+      return {
+        start: dayjs(dashboardFilter.month).startOf('month'),
+        end: dayjs(dashboardFilter.month).endOf('month'),
+      };
+    }
+    if (dashboardFilter.mode === 'range' && dashboardFilter.range?.[0] && dashboardFilter.range?.[1]) {
+      return {
+        start: dayjs(dashboardFilter.range[0]).startOf('day'),
+        end: dayjs(dashboardFilter.range[1]).endOf('day'),
+      };
+    }
+    return { start: null, end: null };
+  }, [dashboardFilter]);
+
+  const inDashboardRange = useCallback(
+    (date) => {
+      if (!dashboardRange.start || !dashboardRange.end) return true;
+      return dayjs(date).isBetween(dashboardRange.start, dashboardRange.end, 'day', '[]');
+    },
+    [dashboardRange]
+  );
+
+  const isSavingsTransferExpense = useCallback((expense) => {
+    if (expense.category !== 'Business expenses') return false;
+    if (!expense.notes) return false;
+    return /transfer to savings/i.test(expense.notes);
+  }, []);
+
+  const filteredIncomes = useMemo(() => data.incomes.filter((item) => inDashboardRange(item.date)), [data.incomes, inDashboardRange]);
+  const filteredExpenses = useMemo(() => data.expenses.filter((item) => inDashboardRange(item.date)), [data.expenses, inDashboardRange]);
+  const filteredInvestments = useMemo(() => data.investments.filter((item) => inDashboardRange(item.date)), [data.investments, inDashboardRange]);
+  const filteredSavingsTransfers = useMemo(
+    () => filteredExpenses.filter((expense) => isSavingsTransferExpense(expense)),
+    [filteredExpenses, isSavingsTransferExpense]
+  );
+
+  const expenseByCategoryFiltered = useMemo(() => {
+    return expenseCategories
+      .map((category) => ({
+        type: category,
+        value: sum(filteredExpenses.filter((e) => e.category === category && !isSavingsTransferExpense(e))),
+      }))
+      .filter((x) => x.value > 0);
+  }, [expenseCategories, filteredExpenses, isSavingsTransferExpense]);
+
+  const dashboardSummary = useMemo(() => {
+    const map = new Map();
+    const rowFor = (month) => {
+      if (!map.has(month)) map.set(month, { month, income: 0, expenses: 0, investments: 0, savings: 0 });
+      return map.get(month);
+    };
+
+    filteredIncomes.forEach((tx) => {
+      const row = rowFor(monthKey(tx.date));
+      row.income += Number(tx.amount || 0);
+    });
+    filteredExpenses.forEach((tx) => {
+      if (isSavingsTransferExpense(tx)) return;
+      const row = rowFor(monthKey(tx.date));
+      row.expenses += Number(tx.amount || 0);
+    });
+    filteredInvestments.forEach((tx) => {
+      const row = rowFor(monthKey(tx.date));
+      row.investments += Number(tx.amount || 0);
+    });
+    filteredSavingsTransfers.forEach((tx) => {
+      const row = rowFor(monthKey(tx.date));
+      row.savings += Number(tx.amount || 0);
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
+  }, [filteredExpenses, filteredIncomes, filteredInvestments, filteredSavingsTransfers, isSavingsTransferExpense]);
+
+
   if (!hasSupabaseEnv()) {
     return (
       <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
@@ -528,6 +609,41 @@ export default function App() {
               <Card>
                 <Button onClick={() => openTransfer({ from: 'balance', to: 'savings' })}>Transfer Funds</Button>
               </Card>
+              <Card>
+                <Space wrap>
+                  <Select
+                    value={dashboardFilter.mode}
+                    style={{ width: 170 }}
+                    options={[
+                      { value: 'month', label: 'Filter by month' },
+                      { value: 'range', label: 'Filter by period' },
+                      { value: 'all', label: 'All time' },
+                    ]}
+                    onChange={(mode) => {
+                      if (mode === 'month') {
+                        setDashboardFilter({ mode, month: dayjs(), range: null });
+                      } else if (mode === 'range') {
+                        setDashboardFilter({ mode, month: null, range: [dayjs().startOf('month'), dayjs().endOf('month')] });
+                      } else {
+                        setDashboardFilter({ mode, month: null, range: null });
+                      }
+                    }}
+                  />
+                  {dashboardFilter.mode === 'month' ? (
+                    <DatePicker
+                      picker="month"
+                      value={dashboardFilter.month}
+                      onChange={(month) => setDashboardFilter((prev) => ({ ...prev, month }))}
+                    />
+                  ) : null}
+                  {dashboardFilter.mode === 'range' ? (
+                    <DatePicker.RangePicker
+                      value={dashboardFilter.range}
+                      onChange={(range) => setDashboardFilter((prev) => ({ ...prev, range }))}
+                    />
+                  ) : null}
+                </Space>
+              </Card>
               <Card title="Savings Goals Progress">
                 <Space direction="vertical" style={{ width: '100%' }}>
                   {data.savingsGoals.length === 0 ? <Text type="secondary">No savings goals yet. Add your first goal from the Savings Goals tab.</Text> : null}
@@ -572,9 +688,51 @@ export default function App() {
 
               <Row gutter={[16, 16]}>
                 <Col xs={24} lg={12}><Card title="Income by Source">{incomeBySource.length ? <Pie data={incomeBySource} angleField="value" colorField="type" label={{ text: 'value' }} /> : <Text>No income yet.</Text>}</Card></Col>
-                <Col xs={24} lg={12}><Card title="Expenses by Category">{expenseByCategory.length ? <Pie data={expenseByCategory} angleField="value" colorField="type" label={{ text: 'value' }} /> : <Text>No expenses yet.</Text>}</Card></Col>
-                <Col xs={24} lg={12}><Card title="Monthly Cash Flow"><Line data={monthlySummary.flatMap((m) => ([{ month: m.month, type: 'Income', value: m.income }, { month: m.month, type: 'Expenses', value: m.expenses }, { month: m.month, type: 'Investments', value: m.investments }]))} xField="month" yField="value" colorField="type" /></Card></Col>
-                <Col xs={24} lg={12}><Card title="Income vs Expenses"><Column data={monthlySummary.flatMap((m) => ([{ month: m.month, type: 'Income', value: m.income }, { month: m.month, type: 'Expenses', value: m.expenses }]))} xField="month" yField="value" colorField="type" group /></Card></Col>
+                <Col xs={24} lg={12}>
+                  <Card title="Expenses by Category (Savings excluded)">
+                    {expenseByCategoryFiltered.length ? (
+                      <Pie
+                        data={expenseByCategoryFiltered}
+                        angleField="value"
+                        colorField="type"
+                        label={{ content: (item) => `${item.type} ${(item.percent * 100).toFixed(1)}%` }}
+                      />
+                    ) : (
+                      <Text>No expenses in this period.</Text>
+                    )}
+                  </Card>
+                </Col>
+                <Col xs={24} lg={12}>
+                  <Card title="Monthly Cash Flow (Filtered)">
+                    <Line
+                      data={dashboardSummary.flatMap((m) => ([
+                        { month: m.month, type: 'Income', value: m.income },
+                        { month: m.month, type: 'Expenses', value: m.expenses },
+                        { month: m.month, type: 'Investments', value: m.investments },
+                        { month: m.month, type: 'Savings', value: m.savings },
+                      ]))}
+                      xField="month"
+                      yField="value"
+                      colorField="type"
+                    />
+                  </Card>
+                </Col>
+                <Col xs={24} lg={12}>
+                  <Card title="Income vs Expenses vs Savings vs Investments">
+                    <Column
+                      data={dashboardSummary.flatMap((m) => ([
+                        { month: m.month, type: 'Income', value: m.income },
+                        { month: m.month, type: 'Expenses', value: m.expenses },
+                        { month: m.month, type: 'Savings', value: m.savings },
+                        { month: m.month, type: 'Investments', value: m.investments },
+                      ]))}
+                      xField="month"
+                      yField="value"
+                      colorField="type"
+                      group
+                    />
+                  </Card>
+                </Col>
               </Row>
 
               <Row gutter={[16, 16]}>
