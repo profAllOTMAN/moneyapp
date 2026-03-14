@@ -24,10 +24,13 @@ import {
 } from 'antd';
 import { Pie, Line, Column } from '@ant-design/charts';
 import dayjs from 'dayjs';
+import isBetween from 'dayjs/plugin/isBetween';
 import { hasSupabaseEnv, supabase } from './supabaseClient';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
+
+dayjs.extend(isBetween);
 
 const incomeSources = ['Job', 'Freelance', 'Offline Business', 'Investment Returns'];
 const expenseCategories = ['Food', 'Transport', 'Rent', 'Bills', 'Entertainment', 'Shopping', 'Health', 'Business expenses'];
@@ -40,6 +43,7 @@ const defaultData = {
   savingsGoals: [],
 };
 const AUTO_SWEEP_PREFIX = 'moneyflow-pro-auto-sweep';
+const DASHBOARD_FILTER_PREFIX = 'moneyflow-pro-dashboard-filter';
 
 const KEY_TO_TYPE = {
   incomes: 'income',
@@ -106,6 +110,9 @@ function mapRecordToRow(recordType, userId, record) {
 
 function sweepMarkerKey(userId) {
   return `${AUTO_SWEEP_PREFIX}-${userId}`;
+}
+function dashboardFilterKey(userId) {
+  return `${DASHBOARD_FILTER_PREFIX}-${userId}`;
 }
 
 export default function App() {
@@ -190,6 +197,33 @@ export default function App() {
       return;
     }
     setAutoSweepMonth(localStorage.getItem(sweepMarkerKey(user.id)) || '');
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const raw = localStorage.getItem(dashboardFilterKey(user.id));
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      const nextExpense = parsed?.expenseFilter;
+      const nextIncomeVs = parsed?.incomeVsFilter;
+      if (nextExpense) {
+        setExpenseFilter({
+          mode: nextExpense.mode || 'month',
+          month: nextExpense.month ? dayjs(nextExpense.month) : dayjs(),
+          range: Array.isArray(nextExpense.range) ? nextExpense.range.map((v) => dayjs(v)) : null,
+        });
+      }
+      if (nextIncomeVs) {
+        setIncomeVsFilter({
+          mode: nextIncomeVs.mode || 'month',
+          month: nextIncomeVs.month ? dayjs(nextIncomeVs.month) : dayjs(),
+          range: Array.isArray(nextIncomeVs.range) ? nextIncomeVs.range.map((v) => dayjs(v)) : null,
+        });
+      }
+    } catch {
+      // ignore malformed storage
+    }
   }, [user?.id]);
 
   useEffect(() => {
@@ -385,6 +419,10 @@ export default function App() {
       }))
       .filter((x) => x.value > 0);
   }, [data.expenses, expenseCategories, expenseRange, inRange, isSavingsTransferExpense]);
+  const expenseTotalFiltered = useMemo(
+    () => expenseByCategoryFiltered.reduce((acc, item) => acc + Number(item.value || 0), 0),
+    [expenseByCategoryFiltered]
+  );
 
   const incomeVsSummary = useMemo(() => {
     const map = new Map();
@@ -413,6 +451,23 @@ export default function App() {
 
     return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
   }, [data.expenses, data.incomes, data.investments, incomeVsRange, inRange, isSavingsTransferExpense]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const payload = {
+      expenseFilter: {
+        mode: expenseFilter.mode,
+        month: expenseFilter.month ? dayjs(expenseFilter.month).format('YYYY-MM-01') : null,
+        range: expenseFilter.range ? expenseFilter.range.map((v) => dayjs(v).format('YYYY-MM-DD')) : null,
+      },
+      incomeVsFilter: {
+        mode: incomeVsFilter.mode,
+        month: incomeVsFilter.month ? dayjs(incomeVsFilter.month).format('YYYY-MM-01') : null,
+        range: incomeVsFilter.range ? incomeVsFilter.range.map((v) => dayjs(v).format('YYYY-MM-DD')) : null,
+      },
+    };
+    localStorage.setItem(dashboardFilterKey(user.id), JSON.stringify(payload));
+  }, [expenseFilter, incomeVsFilter, user?.id]);
 
 
   if (!hasSupabaseEnv()) {
@@ -695,7 +750,12 @@ export default function App() {
                         data={expenseByCategoryFiltered}
                         angleField="value"
                         colorField="type"
-                        label={{ content: (item) => `${item.type} ${(item.percent * 100).toFixed(1)}%` }}
+                        label={{
+                          content: (item) => {
+                            const pct = expenseTotalFiltered ? (Number(item.value || 0) / expenseTotalFiltered) * 100 : 0;
+                            return `${item.type} ${pct.toFixed(1)}%`;
+                          },
+                        }}
                       />
                     ) : (
                       <Text>No expenses in this period.</Text>
